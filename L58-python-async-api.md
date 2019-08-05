@@ -1,6 +1,6 @@
 Async API for gRPC Python
 ----
-* Author(s): lidiz
+* Author(s): lidiz, Pau Freixes (pau.freixes@skyscanner.net)
 * Approver: a11r
 * Status: Draft
 * Implemented in: Python
@@ -131,6 +131,66 @@ There are three mechanisms to schedule coroutines:
 1. Await the coroutine `await asyncio.sleep(1)`;
 2. Submit the coroutine to the event loop object `loop.call_soon(coro)`;
 3. Turn coroutine into an `asyncio.Task` object `asyncio.ensure_future(coro)`.
+
+## Achieving cooperation between gRPC and Asyncio
+
+Till now there was no easy and clean way for having a native implementation
+of gRPC for Asyncio. The blocking nature of the different completion queue
+implementations was a blocker.
+
+Solutions like the one implemented by the [gRPC Node](https://github.com/grpc/grpc-node)
+would not fully solve the Asyncio implementation.
+
+With the introduction of the [completion queue for callback](https://github.com/grpc/grpc/blob/master/include/grpc/grpc.h#L118)
+and the usage of a custom Iomgr, the Asyncio solution became doable.
+
+### Stopping and resuming the execution flow
+
+Asyncio supports stopping and resuming a task by using a `Future`. Every time
+that a coroutine wants to break the execution flow, stopping the execution can
+be done by [returning](https://github.com/python/cpython/blob/master/Lib/asyncio/futures.py#L257)
+a `Future`, which would stop immediately the task and configuring the task to be
+woken up when the `Future` would be considered [done](https://github.com/python/cpython/blob/master/Lib/asyncio/tasks.py#L315)
+
+The new gRPC Async module will make usage of the
+**completion queue for callback**. This completion queue provides a none
+blocking interface which allows the caller to schedule a call to an
+application function when a gRPC event is triggered.
+
+By using this completion queue implementation the gRPC Async module will be able
+to stop and resume the execution flow. First, returning the control back to the
+Asyncio loop when a gRPC event is not yet available. And second, resuming the
+Asyncio task when the gRPC event is finnally available.
+
+The following snippet shows how the public API having an asynchronous `stub.Hi`
+call might eventually stop the execution flow, waitting till the response is
+available:
+
+```Python
+async with grpc.aio.insecure_channel("localhost:50051") as channel:
+    stub = echo_pb2_grpc.EchoStub(channel)
+    response = await stub.Hi(echo_pb2.EchoRequest(message="ping"))
+```
+
+Under the hood, the gRPC Async module will wire the completion queue callback
+with an Asyncio Future, returning back the execution flow once the response is
+avilable.
+
+### Asyncio Iomgr
+
+The gRPC Async module will use a **gRPC custom Iomgr** implementented on top of
+Asyncio, using internally the interfaces provided by the Asyncio loop, for
+network, timer and resolver operations.
+
+Custom Iomgr interfaces use a callback pattern, having a none blocking
+paradigm which makes usage of callbacks for notifying when events have finished.
+This fits with the Asyncio paradigm, where tasks - for example, the
+creation of a TCP connection - can be executed in background, having the ability
+of scheduling a callback when a task is considered done without blocking the
+execution flow.
+
+An Asyncio application always has a loop running, the loop will be continuously handling
+gRPC events added by the custom Iomgr.
 
 ## Proposal
 
@@ -429,4 +489,4 @@ other out of box.
 
 ## Implementation
 
-* TBD
+TODO
